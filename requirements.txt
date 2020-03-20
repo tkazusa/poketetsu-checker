@@ -1,3 +1,0 @@
-requests-html==0.10.0
-python-lambda-local==0.1.12
-boto3==1.12.22
