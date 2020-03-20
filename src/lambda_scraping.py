@@ -51,7 +51,8 @@ def theory_check(theories: dict, page_links: list) -> dict:
     for page_link in page_links:
         logger.info('pick up theories in {}'.format(page_link))
         page_url ='https://yakkun.com'  + page_link 
-        
+
+        session = HTMLSession()
         response = session.get(page_url)
         contents = response.html.find('#contents', first=True)
         theory_names = contents.find('.next')
@@ -61,7 +62,7 @@ def theory_check(theories: dict, page_links: list) -> dict:
             if theory_name.text not in theories:
                 logger.info('New theory {} added'.format(theory_name.text))
 
-                theory_link = base_url + list(theory_name.links)[0]
+                theory_link = BASE_URL + list(theory_name.links)[0]
                 theories.setdefault(theory_name.text, theory_link)
                 new_theories.setdefault(theory_name.text, theory_link)
 
@@ -70,35 +71,35 @@ def theory_check(theories: dict, page_links: list) -> dict:
 
     return theories, new_theories
 
+def lambda_handler(event, context):
+    # スクレイピング対象となるページの url を取得
+    session = HTMLSession()
+    r = session.get(BASE_URL+PAGE1_URL)
+    page_elements = r.html.find('#contents > div:nth-child(3) > ul.pager')
+    for elements in page_elements:
+        page_links = elements.links
+        page_links.add('/swsh/theory/list/?start=0&sort=spotlight')
 
-# スクレイピング対象となるページの url を取得
-session = HTMLSession()
-r = session.get(BASE_URL+PAGE1_URL)
-page_elements = r.html.find('#contents > div:nth-child(3) > ul.pager')
-for elements in page_elements:
-    page_links = elements.links
-    page_links.add('/swsh/theory/list/?start=0&sort=spotlight')
+    # 最新の theory 一覧を S3 から取得
+    s3 = boto3.resource('s3')
+    bucket = s3.Bucket(BUCKET_NAME)
+    bucket.download_file(OBJKEY, FILEPATH)
+    with open(FILEPATH) as f:
+        theories = json.load(f)
 
-# 最新の theory 一覧を S3 から取得
-s3 = boto3.resource('s3')
-bucket = s3.Bucket(BUCKET_NAME)
-bucket.download_file(OBJKEY, FILEPATH)
-with open(FILEPATH) as f:
-    theories = json.load(f)
+    theories, new_theories = theory_check(theories, page_links)
 
-theories, new_theories = theory_check(theories, page_links)
+    # with open('theories.json', 'w') as f:
+    #     json.dump(theories, f, indent=2, ensure_ascii=False)
 
-# with open('theories.json', 'w') as f:
-#     json.dump(theories, f, indent=2, ensure_ascii=False)
+    obj = s3.Object(BUCKET_NAME,OBJKEY)
+    r = obj.put(Body=json.dumps(theories, indent=2, ensure_ascii=False))
+    logger.info('{} is uploaded in {}'.format(BUCKET_NAME, OBJKEY))
 
-obj = s3.Object(BUCKET_NAME,OBJKEY)
-r = obj.put(Body=json.dumps(theories, indent=2, ensure_ascii=False))
-logger.info('{} is uploaded in {}'.format(BUCKET_NAME, OBJKEY))
-
-if not new_theories:
-    logger.info('No new theory exists')
-else:
-    for k, v in new_theories.items():
-        argStr = '{} が育成論に追加されました。リンクはこちら {}'.format(k, v)
-        logger.info('new theory:{}, link:{}'.format(k, v))
-        post_slack(argStr)
+    if not new_theories:
+        logger.info('No new theory exists')
+    else:
+        for k, v in new_theories.items():
+            argStr = '{} が育成論に追加されました。リンクはこちら {}'.format(k, v)
+            logger.info('new theory:{}, link:{}'.format(k, v))
+            response_code = post_slack(argStr)
